@@ -1,0 +1,231 @@
+#!/bin/bash
+#
+# Jenkins build script
+#
+
+readonly progname="${0##*/}"
+
+COM_REPOSITORY="$(readlink -f $0)"
+COM_REPOSITORY="${COM_REPOSITORY%/util/jenkins/*}"
+
+# Generate a temporary build directory
+
+if [[ -n "${TMPDIR}" ]]; then
+	[[ -d "${TMPDIR}" ]] ||
+		mkdir -p ${TMPDIR}
+fi
+
+BUILD_DIR=$(mktemp -d --tmpdir)
+TMP_DIRECTORIES=${BUILD_DIR}
+
+cleanup()
+{
+    rm -rf ${TMP_DIRECTORIES}
+}
+
+trap "cleanup" EXIT SIGINT SIGHUP SIGTERM
+
+source ${COM_REPOSITORY}/util/jenkins/setup
+
+usage()
+{
+	cat <<_usage_
+usage: ${progname} [options]
+
+Options:
+ -h, --help         display this message
+ -l, --local        do a local run (will emulate the Jenkins environment to
+                    make it easier to run outside Jenkins)
+ -q, --quiet        disable echoing of commands
+ -t, --target       target type to build
+ -c, --comdeps-dir
+ --pt               to turn-on PT
+ --valgrind         to build with valgrind on
+
+Targets:
+ native64
+
+Environment variables:
+
+ BUILD_TARGET
+ Build target type, '--target' overrides BUILD_TARGET.
+
+ COM_JENKINS_STASH_DIR
+ Path to stash dir used to share workspace between build jobs and tests.
+
+ JOB_NAME
+ Name of the project of this build.
+
+ BUILD_NUMBER
+ Current build number.
+
+ BUILD_TAG
+ String of jenkins-\${JOB_NAME}-\${BUILD_NUMBER}.
+
+ WORKSPACE
+ The absoulte path of the workspace.
+
+_usage_
+	exit 1
+}
+
+quiet=0
+target=${BUILD_TARGET}
+comdepsdir=''
+long='help,local,quiet,target:,comdeps-dir:,com-version:,valgrind:,pt'
+short='h,l,q,t:,c:,n:'
+args="$(getopt -n ${progname} -o ${short} -l ${long} -- "$@")"
+[ $? -ne 0 ] && exit 1
+
+eval set -- "${args}"
+
+while true; do
+	case "$1" in
+	-h|--help)
+		usage
+		;;
+	-l|--local)
+		JOB_NAME="local-run-${USER}"
+		BUILD_NUMBER=1337
+		BUILD_TAG="jenkins-${JOB_NAME}-${BUILD_NUMBER}"
+		NODE_NAME="$(hostname).$(domainname)"
+		WORKSPACE="${COM_REPOSITORY}"
+		GIT_COMMIT="$(git --git-dir ${COM_REPOSITORY}/.git rev-parse HEAD)"
+		shift
+		;;
+	-q|--quiet)
+		quiet=1
+		shift
+		;;
+	-t|--target)
+		target="$(echo $2 | tr -d "'")"
+		shift 2
+		;;
+	-c|--comdeps-dir)
+		comdepsdirtmp="$(echo $2 | tr -d "'")"
+		[ -z "${comdepsdirtmp}" ] || COM_DEPS_DIR=${comdepsdirtmp}
+		shift 2
+		;;
+	-n|--com-version)
+		comversiontmp="$(echo $2 | tr -d "'")"
+		[ -z "${comversiontmp}" ] || COM_VERSION=${comversiontmp}
+		shift 2
+		;;
+	--valgrind)
+		VALGRIND="-DVALGRIND=true"
+		shift
+		;;
+	--pt)
+                PT="-DPT=on"
+                shift
+                ;;
+	--)
+		shift
+		break
+		;;
+	esac
+done
+
+# Check that we have all the Jenkins variables we need
+[ -z "${COM_JENKINS_STASH_DIR}" ] &&
+	error 'Jenkins environment variable COM_JENKINS_STASH_DIR missing'
+[ -d "${COM_JENKINS_STASH_DIR}" ] ||
+	error "COM_JENKINS_STASH_DIR points to non-existing directory: ${COM_JENKINS_STASH_DIR}"
+[ -z "${JOB_NAME}" ] &&
+	error 'Jenkins environment variable JOB_NAME missing'
+[ -z "${BUILD_NUMBER}" ] &&
+	error 'Jenkins environment variable BUILD_NUMBER missing'
+[ -z "${BUILD_TAG}" ] &&
+	error 'Jenkins environment variable BUILD_TAG missing'
+[ -z "${WORKSPACE}" ] &&
+	error 'Jenkins environment variable WORKSPACE missing'
+[ -z "${COM_DEPS_DIR}" ] &&
+	error 'Jenkins environment variable COM_DEPS_DIR missing'
+
+#add the cmake flag to the comdeps path
+[ -z "${COM_DEPS_DIR}" ] || comdepsdir="-DCOM_DEPS_DIR="${COM_DEPS_DIR}
+
+#add the cmake flag of COM VERSION
+[ -z "${COM_VERSION}" ] || comversion="-DCOM_VERSION="${COM_VERSION}
+
+print_setup_info "Building COM for ${target}"
+
+[ ${quiet} -eq 0 ] && set -o xtrace
+
+# Build COM
+build_com ${target} ${comdepsdir} ${comversion} ${VALGRIND} ${PT}
+
+cd ${COM_REPOSITORY}
+
+if (( $(is_repository_dirty) > 0 ))
+then
+	echo "Following files are not formatted:"
+	git --no-pager diff --name-only
+	git submodule foreach --recursive git --no-pager diff --name-only
+	error 'CBA/com repository is dirty because of unformatted files! Please use ASTYLE!'
+fi
+# Move build folder to workspace
+rsync -ra                  \
+      --exclude=com-build/CMakeFiles \
+      --exclude=com-build/3pp/src    \
+      --exclude=com-build/tmp        \
+      --exclude=com-build/3pp/build  \
+      --exclude=com-prefix  \
+      ${BUILD_DIR}/com-build/* ${WORKSPACE}/com-main/build
+
+# Create a tailored script to start function tests using the stashed build
+
+com_build_settings_file="${COM_REPOSITORY}/com-main/com_build.settings"
+
+echo "export OLD_BUILD_DIR=${BUILD_DIR}/com-build" >> ${com_build_settings_file}
+echo "export OLD_COM_DEPS_DIR=${COM_DEPS_DIR}" >> ${com_build_settings_file}
+echo "export BUILD_TARGET=${target}" >> ${com_build_settings_file}
+echo "export OLD_WORKSPACE=${WORKSPACE}/com-main" >> ${com_build_settings_file}
+
+# To get tar to add the absoulute path we need to cd to the com repository
+cd ${COM_REPOSITORY}
+
+# Generate com-<com version>-test.tar.gz in dist folder
+COM_TEST_TAR=${BUILD_DIR}/dist/com-${COM_VERSION}-test.tar
+tar cf ${COM_TEST_TAR} \
+		 util \
+		 com-main \
+		 --exclude-vcs \
+		 --exclude='com-main/build/dist' \
+		 --exclude='com-main/build/3pp/dist' \
+		 --exclude='com-main/build/bin' \
+		 --exclude='com-main/build/tmp' \
+		 --exclude='com-main/build/CMakeFiles' \
+		 --exclude='com-main/build/com_install' \
+		 --exclude='com-main/3pp/src' \
+		 --exclude='com-main/build/3pp' \
+		 --exclude='comsa-source'
+
+# Append the pt rpm
+PT_RPM=com-main/build/dist/com-pt-test-*-${COM_VERSION}.noarch.rpm
+if [ -f ${PT_RPM} ];
+then
+	tar --file ${COM_TEST_TAR} --append ${PT_RPM}
+fi
+
+# Append the model sdps for integration tests
+MDF_SDPS=com-main/build/dist/CONFIGPKG_COM_R1*.sdp
+if [ "$(ls ${MDF_SDPS} 2>/dev/null)" ];
+then
+	tar --file ${COM_TEST_TAR} --append ${MDF_SDPS}
+fi
+
+# Compress and remove the test.tar
+gzip ${COM_TEST_TAR}
+rm -f ${COM_TEST_TAR}
+
+# Move dist folder to workspace
+rsync -ra ${BUILD_DIR}/dist/* ${WORKSPACE}/dist/
+
+# Move unit test and com runtime to the workspace
+rsync -ra ${BUILD_DIR}/com-build/dist/com*runtime.tar.gz ${WORKSPACE}/dist/
+
+#build dir cleanup
+rm -rf ${BUILD_DIR}
+
+exit

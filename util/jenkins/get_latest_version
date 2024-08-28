@@ -1,0 +1,51 @@
+#!/bin/bash
+#
+# Script to create new build version for COM
+#
+
+COM_REPOSITORY="$(readlink -f $0)"
+COM_REPOSITORY="${COM_REPOSITORY%/util/jenkins/*}"
+
+source ${COM_REPOSITORY}/util/jenkins/setup
+
+# Turn off exit on error
+set +o errexit
+
+WORKSPACE="${WORKSPACE}/com-main"
+parse_build_number()
+{
+	DEFAULTIFS=$IFS
+	IFS='-'
+	read -r version build <<< "$1"
+	IFS=$DEFAULTIFS
+}
+
+# Get latest commit hash
+GIT_COMMIT=$(git rev-parse --verify HEAD)
+echo "GIT_COMMIT=$GIT_COMMIT" >> version.properties
+
+# Get the version stored in versions.cmake file
+tmpversion=$(grep -Po "\d+(\.\d+)+" $WORKSPACE/cmake_modules/versions.cmake)
+echo "COM version from versions.cmake is $tmpversion"
+
+new_version=$tmpversion
+new_build=1
+
+# Get the latest tag for current version
+tmpversion=$(git describe --tags --abbrev=0 --match $tmpversion* 2>/dev/null)
+
+# Check if the tag exists, otherwise use the version from the file.
+if (( $? == 0 )) ;
+then
+	echo "COM version from repo is $tmpversion"
+	parse_build_number "$tmpversion"
+	new_version=$version
+	new_build=$((build+1))
+else
+	echo "COM version cannot be retrieved from repo! COM version from versions.cmake will be used instead."
+fi
+
+COM_VERSION="$new_version-$new_build"
+echo "New COM version will be $COM_VERSION"
+
+echo "COM_VERSION=$COM_VERSION" >> version.properties

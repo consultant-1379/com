@@ -1,0 +1,488 @@
+#
+# Common Jenkins configuration
+#
+
+set -o errexit
+
+error()
+{
+	[ -n "$@" ] && echo "ERROR: $@" >&2
+
+	exit 1
+}
+
+warning()
+{
+	[ -n "$@" ] && echo "WARNING: $@" >&2
+}
+
+# Determine a sane number of worker threads for make
+# if the variable is not set in the node in jenkins use
+# a default behavior.
+[ -z "${MAKE_WORKERS}" ] && MAKE_WORKERS=$(grep -s -c '^processor' /proc/cpuinfo)
+
+# Variables that needs to be set before calling functions in this file:
+#
+# BUILD_DIR       job build directory
+# COM_REPOSITORY  path to COM repository
+#
+[ -z "${BUILD_DIR}" ] && error 'BUILD_DIR unset'
+[ -z "${COM_REPOSITORY}" ] && error 'COM_REPOSITORY unset'
+
+# Set property in com_test.properties, make sure that property also is
+# uncommented.
+#
+# Arguments:
+#   1 - key
+#   2 - value
+#
+# Requires BUILD_DIR to be set.
+#
+set_test_property()
+{
+	local property_file="${BUILD_DIR}/com_test.properties"
+	local key=${1}
+	local value=${2}
+
+	[ -e "${property_file}" ] ||
+		error "${property_file} does not exist"
+
+	sed -i "s,#*${key}=.*,${key}=${value}," ${property_file}
+}
+
+get_test_property()
+{
+	local property_file="${BUILD_DIR}/com_test.properties"
+	local key=${1}
+
+	[ -e "${property_file}" ] ||
+		error "${property_file} does not exist"
+
+	value=`grep ${key}= ${property_file} \
+		| awk 'BEGIN { FS = "=" } { print $2 }' \
+		| awk '{$1=$1};1'`
+	echo ${value}
+}
+
+# Print job banner
+#
+# Arguments:
+#   Job description to print
+#
+print_setup_info()
+{
+	echo
+	echo
+	echo "$(date '+%b %d %H:%M:%S') $@"
+	echo
+	echo
+	echo 'Environment:'
+	echo "  JOB_NAME:         ${JOB_NAME:-unset}"
+	echo "  BUILD_NUMBER:     ${BUILD_NUMBER:-unset}"
+	echo "  WORKSPACE:        ${WORKSPACE:-unset}"
+	echo "  USER:             ${USER:-unset}"
+	echo "  NODE_NAME:        ${NODE_NAME:-unset}"
+	echo "  GIT_COMMIT:       ${GIT_COMMIT:-unset}"
+	echo "  BUILD_TARGET:     ${BUILD_TARGET:-unset}"
+	echo "  REMOTE_COM_HOST:  ${REMOTE_COM_HOST:-unset}"
+	echo "  MAKE_WORKERS:     ${MAKE_WORKERS:-unset}"
+	echo "  TMPDIR:           ${TMPDIR:-unset}"
+	echo
+	echo
+	print_host_info
+}
+
+setup_hub()
+{
+	# setup the temporary directory
+	if [[ -n "${TMPDIR}" ]]; then
+		[[ -d "${TMPDIR}" ]] ||
+		mkdir -p ${TMPDIR}
+	fi
+
+	# Enable coredumps
+	ulimit -c unlimited
+
+	# Increase soft limit of Stack size to avoid compiler crash
+	ulimit -s unlimited
+
+	# Enable UTF8
+	export LANG=en_US.utf8
+
+	if [ -f "/etc/redhat-release" ]; then
+		# This is for RHEL machines
+
+		#module(1) setup
+		MODULEPATH='/home/comadmin/.afs/0/imodules'
+		MODULEPATH="${MODULEPATH}:/app/modules/0/modulefiles"
+		MODULEPATH="${MODULEPATH}:/env/seki/modules"
+		MODULEPATH="${MODULEPATH}:/env/common/modules"
+
+		export MODULEPATH
+
+		source /app/modules/0/init/bash
+
+		module purge
+
+		module add git/2.1.0
+		module add cmake/2.8.6
+		module add maven/3.1.0
+		module add j2sdk/1.6.0_45
+		module add astyle/2.05.1
+
+	elif [ -f "/etc/os-release" ]; then
+		# this is for SLES12 and newer releases in the HUB/EIS
+
+		#module(1) setup
+		MODULEPATH='/home/comadmin/.afs/0/imodules'
+		MODULEPATH="${MODULEPATH}:/app/modules/0/modulefiles"
+		MODULEPATH="${MODULEPATH}:/env/seki/modules"
+		MODULEPATH="${MODULEPATH}:/env/common/modules"
+
+		export MODULEPATH
+
+		source /app/modules/0/init/bash
+
+		module purge
+
+		module add git/2.1.0
+		module add maven/3.1.0
+		module add j2sdk/1.6.0_75
+		module add cmake
+		module add astyle/2.05.1
+
+                # module for rpmlint
+                module add rpmlint/1.9
+
+	else
+		# This is for SLES11 hub machines
+
+		# module(1) setup
+		MODULEPATH='/proj/ecomhud/sle-11.1/modules'
+		MODULEPATH="${MODULEPATH}:/app/modules/0/modulefiles"
+		MODULEPATH="${MODULEPATH}:/env/seki/modules"
+		MODULEPATH="${MODULEPATH}:/env/common/modules"
+
+		source /usr/share/modules/init/bash
+		# if we do not unload any loaded openssl there are a big chance
+		# that the function tests will not run properly and build
+		# COM with proper openssl version
+		unload_module_loaded_openssl
+
+		# Purge old modulefiles
+		module purge
+
+		# Load required modulefiles
+		module add git/1.9.0
+		module add cmake/2.8.6
+		module add maven/3.1.0
+		module add j2sdk/1.6.0_45
+		module add astyle/2.05.1
+
+		# modules used with LTTNG
+		module add automake/1.12.2
+		module add python/2.7.6
+		module add bison/3.0
+
+		# XXX Remove this once we figured out how to do it the right way
+		module add openldap/2.4.32
+		# XXX
+
+		module add openssl/0.9.8n
+	fi
+}
+
+unload_module_loaded_openssl()
+{
+	modules=$(module -t list 2> tmpmodule && cat tmpmodule)
+
+	for m in ${modules}; do
+		if [[ "$m" == openssl/* ]]; then
+			echo "Unloading "$m
+			module unload $m
+		fi
+	done
+}
+
+print_hub_info()
+{
+	echo 'Running in HUB environment:'
+	[ -e /etc/SuSE-release ] && cat /etc/SuSE-release | sed 's,^,  ,'
+	echo
+	echo
+	module list
+	echo
+	echo
+	echo 'Shell settings:'
+	ulimit -a | sed 's,^,  ,'
+	echo
+	echo
+}
+
+print_remote_node_info()
+{
+	if [ -n "${COM_REMOTE_HOST}" ]; then
+		echo "Running tests against: ${COM_REMOTE_HOST}"
+		echo
+		echo
+		echo 'FIXME identification of remote node'
+		echo
+		echo
+	fi
+}
+
+print_cluster_information()
+{
+	if [ -n "${COM_LOTC_CONTROL_1}" ] && [ -n "${COM_LOTC_CONTROL_2}" ]; then
+		echo "Running tests against: ${COM_LOTC_CONTROL_1} and ${COM_LOTC_CONTROL_2}"
+
+		root_user=$(get_test_property "root_user")
+		root_user_password=$(get_test_property "root_user_password")
+
+		# get repository list
+		${COM_MAIN_REPOSITORY}/util/jenkins/ssh_execute ${COM_LOTC_CONTROL_1} ${root_user} ${root_user_password} cmw-repository-list
+
+		# get LDE info
+		${COM_MAIN_REPOSITORY}/util/jenkins/ssh_execute ${COM_LOTC_CONTROL_1} ${root_user} ${root_user_password} lde-info
+	fi
+}
+
+print_host_info()
+{
+	print_hub_info
+	print_remote_node_info
+	print_cluster_information
+}
+
+_run_cmake_native64_default()
+{
+	cmake -DCBA_PACKAGING=on ${@} ${COM_REPOSITORY}
+}
+
+# Sanity check build target
+#
+# Arguments:
+#   1 - target
+#
+check_target()
+{
+	case "${1}" in
+	native64)    ;;
+	*)
+		error "unknown build target: ${1}"
+		;;
+	esac
+}
+
+# Configure build for COM (check_target must be called before this)
+#
+# Arguments:
+#   1 - target
+#   2 - comdeps
+#
+run_cmake()
+{
+	local target=${1}
+	shift
+	local comdeps=${1}
+	shift
+	local custom_cmake_parameters=${@}
+
+	[ -d "${BUILD_DIR}" ] ||
+		error "no such directory: ${BUILD_DIR}"
+	[ -e "${BUILD_DIR}/CMakeCache.txt" ] &&
+		error "CMake has already been run here: ${BUILD_DIR}"
+
+	cd ${BUILD_DIR}
+
+	eval  _run_cmake_${target}_default ${comdeps} ${custom_cmake_parameters}
+}
+
+# Build COM, this will build the targets 'release' and 'build-ft'. If the job
+# requires other make targets to be invoked, use run_cmake() and make(1)
+# directly in the job script.
+#
+# Arguments:
+#   1 - target
+#   2 - comdeps
+#
+build_com()
+{
+	local target=${1}
+	shift
+	local comdeps=${1}
+	shift
+	local custom_cmake_parameters=${@}
+
+	check_target ${target}
+
+	run_cmake ${target} ${comdeps} ${custom_cmake_parameters}
+
+	make -C ${BUILD_DIR} -j ${MAKE_WORKERS} all
+	make -C ${BUILD_DIR}/com-build -j ${MAKE_WORKERS} release
+	make -C ${BUILD_DIR}/com-build -j ${MAKE_WORKERS} build-ft
+}
+
+# Translate Jenkins integration suite name to maven arguments
+#
+# Arguments:
+#   1 - integration testsuite to run
+#
+# Returns:
+#   Make target for requested suite, this needs to be kept in sync with the
+#   actual targets in CMake.
+#
+get_make_target_cba_integrationtest()
+{
+	case "${1}" in
+	am)				echo 'run-ft_integration_am';;
+	am_csm)				echo 'run-ft_integration_am_csm';;
+	backward_compability)		echo 'run-ft_integration_backward_compatibility';;
+	bfu)				echo 'run-ft_integration_bfu';;
+	basic)				echo 'run-ft_integration_basic';;
+	basic_csm)			echo 'run-ft_integration_basic_csm';;
+	install_remove)			echo 'run-ft_integration_install_remove';;
+	filem_file_transfer)			echo 'run-ft_integration_filem_file_transfer';;
+	filem_file_transfer_csm)	echo 'run-ft_integration_filem_file_transfer_csm';;
+	install)			echo 'run-ft_integration_install';;
+	install-no-acs)			echo 'run-ft_integration_install-no-acs';;
+	integration)			echo 'run-ft_integration';;
+	integration_csm)		echo 'run-ft_integration_csm';;
+	integration_am_ldap11_with_installation)	echo 'run-ft_integration_am_ldap11_with_installation';;
+	integration_am_ldap11_with_installation_csm)	echo 'run-ft_integration_am_ldap11_with_installation_csm';;
+	install_csm)			echo 'run-ft_integration_install_csm';;
+	bfu_csm)			echo 'run-ft_integration_bfu_csm';;
+	integration-no-acs)		echo 'run-ft_integration-no-acs';;
+	integration_com_comsa_merged)	echo 'run-ft_integration_com_comsa_merged';;
+	load)				echo 'run-ft_integration_load';;
+	load_csm)			echo 'run-ft_integration_load_csm';;
+	overload)			echo 'run-ft_integration_overload';;
+	overload_csm)			echo 'run-ft_integration_overload_csm';;
+	restore)			echo 'run-ft_integration_restore';;
+	stability)			echo 'run-ft_integration_stability';;
+	stability_csm)			echo 'run-ft_integration_stability_csm';;
+	*)
+		error "unknown CBA integration testsuite: ${1}"
+		;;
+	esac
+}
+
+# Translate Jenkins suite name to maven arguments
+#
+# Arguments:
+#   1 - function test suite to run
+#
+# Returns:
+#   maven arguments requirend to run the requested suite.
+#
+get_maven_args_functiontest()
+{
+	local maven_args
+	local suite
+
+	source ${BUILD_DIR}/ft-suites.bash
+
+	# Translate Jenkins suite name to CMake suite name
+	case "${1}" in
+	bidir)				suite="${run_ft_bidir}";;
+	clilegacy_autocomplete)		suite="${run_ft_clilegacy_autocomplete}";;
+	clilegacy_execution)		suite="${run_ft_clilegacy_execution}";;
+	clilegacy_help)			suite="${run_ft_clilegacy_help}";;
+	cli)				suite="${run_ft_cli}";;
+	cli1)				suite="${run_ft_cli1}";;
+	cli2)				suite="${run_ft_cli2}";;
+	cli3)				suite="${run_ft_cli3}";;
+	cli4)				suite="${run_ft_cli4}";;
+	cli5)				suite="${run_ft_cli5}";;
+	cli6)				suite="${run_ft_cli6}";;
+	cli_smoke_exec1)		suite="${run_ft_cli_smoke_exec1}";;
+	cli_smoke_exec2)		suite="${run_ft_cli_smoke_exec2}";;
+	cli_smoke_exec3)		suite="${run_ft_cli_smoke_exec3}";;
+	cli_smoke_auto1)		suite="${run_ft_cli_smoke_auto1}";;
+	cli_smoke_auto2)		suite="${run_ft_cli_smoke_auto2}";;
+	cli_smoke_auto3)		suite="${run_ft_cli_smoke_auto3}";;
+	cli_smoke_help1)		suite="${run_ft_cli_smoke_help1}";;
+	cli_tunnel)			suite="${run_ft_cli_tunnel}";;
+	cli_passwd)			suite="${run_ft_cli_passwd}";;
+	cli_prompt)			suite="${run_ft_cli_prompt}";;
+	crypto)				suite="${run_ft_crypto}";;
+	fileM)				suite="${run_ft_fileM}";;
+	fm)				suite="${run_ft_fm}";;
+	internal)			suite="${run_ft_internal}";;
+	nc)				suite="${run_ft_nc}";;
+	ns)				suite="${run_ft_ns}";;
+	pm)				suite="${run_ft_pm}";;
+	pm_rep_period)			suite="${run_ft_pm_rep_period}";;
+	schema_pop)			suite="${run_ft_schema_pop}";;
+	short)				suite="${run_ft_short}";;
+	sm)				suite="${run_ft_sm}";;
+	test)				suite="${run_ft_test}";;
+	tls_proxy)			suite="${run_ft_tls_proxy}";;
+	trace)				suite="${run_ft_trace}";;
+	scalability)			suite="${run_ft_scalability}";;
+	scalability_tls) 		suite="${run_ft_scalability_tls}";;
+	am)				suite="${run_ft_integration_am}";;
+	am_csm)				suite="${run_ft_integration_am_csm}";;
+	backward_compability)		suite="${run_ft_integration_backward_compatibility}";;
+	bfu)				suite="${run_ft_integration_bfu}";;
+	basic)				suite="${run_ft_integration_basic}";;
+	basic_csm)			suite="${run_ft_integration_basic_csm}";;
+	install_remove)			suite="${run_ft_integration_install_remove}";;
+	filem_file_transfer)		suite="${run_ft_integration_filem_file_transfer}";;
+	filem_file_transfer_csm)	suite="${run_ft_integration_filem_file_transfer_csm}";;
+	install)			suite="${run_ft_integration_install}";;
+	install_no_acs)			suite="${run_ft_integration_install_no_acs}";;
+	integration)			suite="${run_ft_integration}";;
+	integration_csm)		suite="${run_ft_integration_csm}";;
+	integration_am_ldap11_with_installation)	suite="${run-ft_integration_am_ldap11_with_installation}";;
+	integration_am_ldap11_with_installation_csm)	suite="${run-ft_integration_am_ldap11_with_installation_csm}";;
+	install_csm)			suite="${run_ft_integration_install_csm}";;
+	bfu_csm)			suite="${run_ft_integration_bfu_csm}";;
+	integration_no_acs)		suite="${run_ft_integration_no_acs}";;
+	integration_com_comsa_merged)	suite="${run_ft_integration_com_comsa_merged}";;
+	load)				suite="${run_ft_integration_load}";;
+	load_csm)			suite="${run_ft_integration_load_csm}";;
+	overload)			suite="${run_ft_integration_overload}";;
+	overload_csm)			suite="${run_ft_integration_overload_csm}";;
+	restore)			suite="${run_ft_integration_restore}";;
+	stability)			suite="${run_ft_integration_stability}";;
+	stability_csm)			suite="${run_ft_integration_stability_csm}";;
+	*)
+		error "unknown suite: ${1}"
+		;;
+	esac
+
+	# Make sure the suite actually exists
+	[ -z "${suite}" ] &&
+		error "unable to translate ${1}"
+
+	# Create Maven arguments to run requested suite
+	maven_args="${suite}"
+	maven_args="${maven_args} -Dprops=${BUILD_DIR}/com_test.properties"
+	maven_args="${maven_args} -f ${COM_MAIN_REPOSITORY}/test"
+	maven_args="${maven_args} test"
+
+	echo "${maven_args}"
+}
+
+clone_build_artifacts()
+{
+	# Clone the build artifacts from the build job
+	git clone --shared ${stash} ${COM_REPOSITORY}
+	cd ${COM_REPOSITORY}
+	git config core.compression 0
+	echo "checking out ${BUILD_TAG}"
+	git checkout -q origin/${BUILD_TAG}
+}
+
+is_repository_dirty() {
+	index=$(git diff --cached --quiet || echo $?)
+	untracked=$(git status --porcelain 2>/dev/null| grep "^??" | wc -l)
+
+	(( dirty = ${index} + ${untracked} ))
+
+	echo ${dirty}
+}
+
+# For now we only live in the IT HUB
+setup_hub

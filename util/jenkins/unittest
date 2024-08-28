@@ -1,0 +1,15 @@
+#!/bin/bash
+#
+# Jenkins unittest wrapper for com-main unittest script
+#
+# This scripts expects a file structure as the one below
+#
+# WORKSPACE
+#         |-com-main
+#         |        |-build
+#         |        |-util
+#         |-util
+
+WORKSPACE=${WORKSPACE}/com-main
+
+${WORKSPACE}/util/jenkins/unittest "$@"

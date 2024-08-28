@@ -1,0 +1,64 @@
+# Vim backup files
+*~
+
+# GNU Global files
+GPATH
+GRTAGS
+GSYMS
+GTAGS
+
+# GNU idutils db
+ID
+
+# Build directory
+/build/
+
+# Eclipse
+.project
+.cproject
+.settings
+.classpath
+
+# QtCreator IDE
+*.config
+*.creator
+*.files
+*.includes
+*.user
+*.autosave
+
+# KDevelop IDE
+*.kdevelop
+*.kdevelop.filelist
+*.kdevelop.pcs
+*.kdevses
+Doxyfile
+
+# CMake
+Makefile
+CMakeFiles
+CMakeCache.txt
+CMakeConfig.h
+cmake_install.cmake
+.cmake.state
+install_manifest.txt
+
+# Git files
+tags
+**.orig
+**.rej
+**.log
+
+# General file patterns
+**.gcov
+**.pyc
+**.swp
+*.class
+tags
+
+# Ignore core files
+core
+core.*
+!core.cc
+!core.h
+!core.java

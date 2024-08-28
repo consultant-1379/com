@@ -1,0 +1,16 @@
+#!/bin/bash
+#
+# Jenkins functiontest wrapper for com-main functiontest script
+#
+# This scripts expects a file structure as the one below
+#
+# WORKSPACE
+#         |-com-main
+#         |        |-src
+#         |        |-build
+#         |        |-util
+#         |-util
+
+WORKSPACE=${WORKSPACE}/com-main
+
+${WORKSPACE}/util/jenkins/functiontest "$@"

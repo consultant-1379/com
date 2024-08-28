@@ -1,0 +1,16 @@
+#!/bin/bash
+#
+# Jenkins integration wrapper for com-main integration script
+#
+# This scripts expects a file structure as the one below
+#
+# WORKSPACE
+#         |-com-main
+#         |        |-src
+#         |        |-build
+#         |        |-util
+#         |-util
+
+WORKSPACE=${WORKSPACE}/com-main
+
+${WORKSPACE}/util/jenkins/integration "$@"

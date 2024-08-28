@@ -1,0 +1,9 @@
+[submodule "com-main"]
+	path = com-main
+	url = ../com-main
+[submodule "comsa-source"]
+	path = comsa-source
+	url = ../comsa-source
+[submodule "com-vsftpd"]
+	path = com-vsftpd
+	url = ../com-vsftpd

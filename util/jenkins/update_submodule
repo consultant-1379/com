@@ -1,0 +1,145 @@
+#!/bin/bash
+#
+# This script should be used to update the submodules for the CBA/com repository
+#
+#
+#
+SCRIPT=$(readlink -f "$0")
+SCRIPTPATH=$(dirname "$SCRIPT")
+
+source "${SCRIPTPATH}"/super-getopts.sh
+BUILD_DIR="dummy"
+COM_REPOSITORY="dummy"
+
+source "${SCRIPTPATH}"/setup
+
+error(){
+	echo "$1"
+	exit 1
+}
+
+addbranchname(){
+	branchname=$1
+}
+
+addprojectname(){
+	gerritprojectname=$1
+}
+
+addprojectbranchname(){
+	gerritbranchname=$1
+}
+
+addprojectrefspec(){
+	gerritrefspec=$1
+}
+
+addflag "push-to-gerrit" "g" "push for review instead of automatic deliver to the project" "PUSH_TO_GERRIT"
+addflag "gerrit-trigger" "t" "shows run by gerrit-trigger, gerrit-refspec will be needed and nothing will be pushed to branch" "GERRIT_TRIGGER"
+
+addoption "com-branch" "b" "branch to push the updated submodules to" "addbranchname" 1
+addoption "gerrit-project" "p" "gerrit trigger project name" "addprojectname" 1
+addoption "gerrit-branch" "c" "gerrit trigger branch name" "addprojectbranchname" 1
+addoption "gerrit-refspec" "r" "gerrit trigger refspec" "addprojectrefspec" 1
+
+parseoptions "$@"
+
+[ -z "${gerritprojectname}" ] && error "--gerrit-project is not set"
+
+if [ -z "${GERRIT_TRIGGER}" ]
+then
+	[ -z "${gerritbranchname}" ] && error "--gerrit-branch is not set"
+	[ -z "${branchname}" ] && error "--com-branch is not set, adding a branch name is mandatory"
+else
+	[ -z "${gerritrefspec}" ] && error "--gerrit-refspec is not set, it is mandatory if gerrit-trigger is set"
+fi
+
+#
+# Check if the CBA/com repo isnt dirty
+#
+if (( $(is_repository_dirty) > 0 ))
+then
+	echo "the CBA/com repository is dirty"
+	echo "cleaning..."
+
+	git reset HEAD --hard
+	git clean -fdx
+fi
+
+gerritprojectname="$(basename "${gerritprojectname}")"
+gitprojectexec="git --git-dir=${gerritprojectname}/.git"
+
+# Turn off exit on error since the command below is a check that is expected to fail occasionally
+set +o errexit
+
+# Exit and do nothing if the commit is already a parent of the submodule HEAD pointer
+${gitprojectexec} merge-base --is-ancestor "${GERRIT_PATCHSET_REVISION}" HEAD
+
+if [ $? -eq 0 ]
+then
+	echo "No update needed. The commit is already a parent of the submodules HEAD pointer."
+	exit 0
+fi
+
+# Turn back on exit on error.
+set -o errexit
+
+if [ "${GERRIT_TRIGGER}" ]
+then
+	#
+	# If this script is triggered with a patch set update to a submodule
+	# related submodule should be updated with latest refspec to run
+	# build and basic tests for automatic verification of the patch set.
+	#
+
+	#
+	# Get the url of the project's origin
+	#
+	projectoriginurl=$(${gitprojectexec} config --get remote.origin.url)
+
+	#
+	# Fetch and checkout the trigerring patch set
+	#
+	${gitprojectexec} fetch "${projectoriginurl}" "${gerritrefspec}"
+
+	${gitprojectexec} checkout FETCH_HEAD
+
+	#
+	# Update submodules to get latest changes of submodules of the project
+	#
+	git -C "${gerritprojectname}" submodule update
+else
+	#
+	# If this script is triggered with a merge commit to a submodule
+	# related submodule should be updated with the latest version
+	# to keep the branch up-to-date.
+	#
+	# If the update is wanted to be pushed to gerrit instead of
+	# directly to branch, PUSH_TO_GERRIT option should be set.
+	#
+	${gitprojectexec} fetch
+
+	${gitprojectexec} checkout origin/"${gerritbranchname}"
+
+	#
+	# Check if any update is nedded
+	#
+	(( $(is_repository_dirty) > 0 )) && error "no changes in the submodule ${gerritprojectname} found"
+
+	#
+	# Add the new updated submodule to CBA/com
+	#
+	git add .
+
+	git commit -m "Updated submodule ${gerritprojectname} with the latest from ${gerritbranchname}"
+
+	#
+	# Push
+	#
+	if [ -z "${PUSH_TO_GERRIT}" ]
+	then
+		git push origin HEAD:"${branchname}"
+	else
+		git push origin HEAD:refs/for/"${branchname}"
+	fi
+fi
